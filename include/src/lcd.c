@@ -31,7 +31,7 @@ int lcd_init(void)
         lcd_p = NULL;
         return -2;
     }
-    
+    LOG_INFO("lcd init ok");
     return 0;
 }
 
@@ -58,6 +58,7 @@ void lcd_clear(void)
             lcd_p[y][x] = LCD_BLACK;
         }
     }
+    LOG_INFO("lcd clear ok");
 }
 
 void lcd_uninit(void)
