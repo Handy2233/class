@@ -7,5 +7,5 @@
 #include <errno.h>
 #include <string.h>
 
-#include "include/inc/lcd.h"
-#include "include/inc/log.h"
+#include "lcd.h"
+#include "log.h"

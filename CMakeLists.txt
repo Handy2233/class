@@ -6,12 +6,12 @@ set(APP_NAME main)
 
 set(APP_SOURCES
     main.c
-    include/src/lcd.c
+    lib/src/lcd.c
 )
 
 set(APP_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/inc
 )
 
 add_executable(${APP_NAME} ${APP_SOURCES})
