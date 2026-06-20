@@ -8,4 +8,5 @@
 #include <string.h>
 
 #include "lcd.h"
+#include "touch.h"
 #include "log.h"

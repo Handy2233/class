@@ -7,6 +7,7 @@ set(APP_NAME main)
 set(APP_SOURCES
     main.c
     lib/src/lcd.c
+    lib/src/touch.c
 )
 
 set(APP_INCLUDE_DIRS

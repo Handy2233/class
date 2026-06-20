@@ -50,18 +50,22 @@ static unsigned int lcd_blend(unsigned int bg,
     return lcd_rgb(out_r, out_g, out_b);
 }
 
-static void lcd_show_rgba_scaled(int x,
-                                 int y,
-                                 int length,
-                                 int width,
-                                 int pic_w,
-                                 int pic_h,
-                                 const unsigned char *rgba)
+static int lcd_max_int(int a, int b)
 {
-    if(lcd_p == NULL || rgba == NULL)
+    return a > b ? a : b;
+}
+
+static int lcd_min_int(int a, int b)
+{
+    return a < b ? a : b;
+}
+
+static void lcd_fill_rect(int x, int y, int length, int width, unsigned int color)
+{
+    if(lcd_p == NULL)
         return;
 
-    if(length <= 0 || width <= 0 || pic_w <= 0 || pic_h <= 0)
+    if(length <= 0 || width <= 0)
         return;
 
     long right = (long)x + length;
@@ -71,6 +75,55 @@ static void lcd_show_rgba_scaled(int x,
     int dst_y0 = y < 0 ? 0 : y;
     int dst_x1 = right > LCD_W ? LCD_W : (int)right;
     int dst_y1 = bottom > LCD_H ? LCD_H : (int)bottom;
+
+    if(dst_x0 >= dst_x1 || dst_y0 >= dst_y1)
+        return;
+
+    int dst_x, dst_y;
+
+    for(dst_y = dst_y0; dst_y < dst_y1; dst_y++) {
+        for(dst_x = dst_x0; dst_x < dst_x1; dst_x++) {
+            lcd_p[dst_y][dst_x] = color;
+        }
+    }
+}
+
+static void lcd_show_rgba_scaled_clip(int x,
+                                      int y,
+                                      int length,
+                                      int width,
+                                      int pic_w,
+                                      int pic_h,
+                                      const unsigned char *rgba,
+                                      int clip_x,
+                                      int clip_y,
+                                      int clip_length,
+                                      int clip_width)
+{
+    if(lcd_p == NULL || rgba == NULL)
+        return;
+
+    if(length <= 0 || width <= 0 || pic_w <= 0 || pic_h <= 0 ||
+       clip_length <= 0 || clip_width <= 0)
+        return;
+
+    long right = (long)x + length;
+    long bottom = (long)y + width;
+    long clip_right = (long)clip_x + clip_length;
+    long clip_bottom = (long)clip_y + clip_width;
+
+    int image_x0 = x < 0 ? 0 : x;
+    int image_y0 = y < 0 ? 0 : y;
+    int image_x1 = right > LCD_W ? LCD_W : (int)right;
+    int image_y1 = bottom > LCD_H ? LCD_H : (int)bottom;
+    int clip_x0 = clip_x < 0 ? 0 : clip_x;
+    int clip_y0 = clip_y < 0 ? 0 : clip_y;
+    int clip_x1 = clip_right > LCD_W ? LCD_W : (int)clip_right;
+    int clip_y1 = clip_bottom > LCD_H ? LCD_H : (int)clip_bottom;
+    int dst_x0 = lcd_max_int(image_x0, clip_x0);
+    int dst_y0 = lcd_max_int(image_y0, clip_y0);
+    int dst_x1 = lcd_min_int(image_x1, clip_x1);
+    int dst_y1 = lcd_min_int(image_y1, clip_y1);
 
     if(dst_x0 >= dst_x1 || dst_y0 >= dst_y1)
         return;
@@ -98,6 +151,18 @@ static void lcd_show_rgba_scaled(int x,
             }
         }
     }
+}
+
+static void lcd_show_rgba_scaled(int x,
+                                 int y,
+                                 int length,
+                                 int width,
+                                 int pic_w,
+                                 int pic_h,
+                                 const unsigned char *rgba)
+{
+    lcd_show_rgba_scaled_clip(x, y, length, width, pic_w, pic_h, rgba,
+                              0, 0, LCD_W, LCD_H);
 }
 
 int lcd_init(void)
@@ -136,29 +201,102 @@ void lcd_show(int x, int y, unsigned int color)
     lcd_p[y][x] = color;
 }
 
-int lcd_show_pic_rect(const char *pic_path, int x, int y, int length, int width)
+int lcd_pic_load(lcd_pic_t *pic, const char *pic_path)
 {
-    if(lcd_p == NULL)
+    if(pic == NULL)
         return -1;
 
     if(pic_path == NULL)
         return -2;
-
-    if(length <= 0 || width <= 0)
-        return -3;
 
     int pic_w, pic_h;
     unsigned char *rgba = stbi_load(pic_path, &pic_w, &pic_h, NULL, 4);
 
     if(rgba == NULL) {
         LOG_ERROR("load image failed: %s", stbi_failure_reason());
-        return -4;
+        return -3;
     }
 
-    lcd_show_rgba_scaled(x, y, length, width, pic_w, pic_h, rgba);
-    stbi_image_free(rgba);
+    pic->width = pic_w;
+    pic->height = pic_h;
+    pic->rgba = rgba;
 
     return 0;
+}
+
+int lcd_pic_show(const lcd_pic_t *pic, int x, int y, int length, int width)
+{
+    if(lcd_p == NULL)
+        return -1;
+
+    if(pic == NULL || pic->rgba == NULL)
+        return -2;
+
+    if(length <= 0 || width <= 0)
+        return -3;
+
+    lcd_show_rgba_scaled(x, y, length, width, pic->width, pic->height, pic->rgba);
+
+    return 0;
+}
+
+int lcd_pic_show_clip(const lcd_pic_t *pic,
+                      int x,
+                      int y,
+                      int length,
+                      int width,
+                      int clip_x,
+                      int clip_y,
+                      int clip_length,
+                      int clip_width)
+{
+    if(lcd_p == NULL)
+        return -1;
+
+    if(pic == NULL || pic->rgba == NULL)
+        return -2;
+
+    if(length <= 0 || width <= 0 || clip_length <= 0 || clip_width <= 0)
+        return -3;
+
+    lcd_show_rgba_scaled_clip(x, y, length, width, pic->width, pic->height,
+                              pic->rgba, clip_x, clip_y, clip_length, clip_width);
+
+    return 0;
+}
+
+void lcd_pic_free(lcd_pic_t *pic)
+{
+    if(pic == NULL)
+        return;
+
+    if(pic->rgba != NULL) {
+        stbi_image_free(pic->rgba);
+        pic->rgba = NULL;
+    }
+
+    pic->width = 0;
+    pic->height = 0;
+}
+
+int lcd_show_pic_rect(const char *pic_path, int x, int y, int length, int width)
+{
+    if(lcd_p == NULL)
+        return -1;
+
+    if(length <= 0 || width <= 0)
+        return -3;
+
+    lcd_pic_t pic = {0, 0, NULL};
+    int ret = lcd_pic_load(&pic, pic_path);
+
+    if(ret != 0)
+        return ret == -3 ? -4 : ret;
+
+    ret = lcd_pic_show(&pic, x, y, length, width);
+    lcd_pic_free(&pic);
+
+    return ret;
 }
 
 int lcd_show_pic_full(const char *pic_path)
@@ -171,14 +309,13 @@ void lcd_clear(void)
     if(lcd_p == NULL)
         return;
 
-    int x, y;
-
-    for(y = 0; y < LCD_H; y++) {
-        for(x = 0; x < LCD_W; x++) {
-            lcd_p[y][x] = LCD_BLACK;
-        }
-    }
+    lcd_fill_rect(0, 0, LCD_W, LCD_H, LCD_BLACK);
     LOG_INFO("lcd clear ok");
+}
+
+void lcd_clear_rect(int x, int y, int length, int width)
+{
+    lcd_fill_rect(x, y, length, width, LCD_BLACK);
 }
 
 void lcd_uninit(void)
