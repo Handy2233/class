@@ -21,7 +21,7 @@ int main(){
     lcd_clear();
 
     //draw_circle(lcd_get_p(), 400, 240, 100, 0x0000FF00);
-    lcd_drag_pic("./pic/1.png", 0, 0, 800, 480);
+    lcd_drag_pic("./pic/1.png");
 
     lcd_uninit();
     return 0;
