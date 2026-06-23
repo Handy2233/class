@@ -4,17 +4,43 @@
 #include <dirent.h>
 #include <stdlib.h>
 
+/**
+ * @file main.c
+ * @brief 图片浏览器主程序。
+ *
+ * @details 功能：
+ * 1. 扫描 PIC_DIR 目录下的图片文件，并按文件名排序。
+ * 2. 将图片等比缩放到 LCD 屏幕内最大尺寸，居中显示，空白区域填黑。
+ * 3. 使用触摸屏左右滑动切换图片，并在滑动过程中跟手显示动画。
+ * 4. 为避免滑动时掉帧，只缓存当前图片、上一张图片、下一张图片，
+ *    不会把目录里的所有图片一次性放进内存。
+ *
+ * @details 显示策略：
+ * - pic_cache_t 保存已经缩放到 800x480 页面里的图片像素。
+ * - frame_cache_t 是离屏帧缓存，滑动时先把两张页面拼到这里，
+ *   再一次性拷贝到 framebuffer，减少屏幕刷新过程中的闪烁和撕裂感。
+ */
+
+/** @brief 图片目录。程序运行时应保证该路径相对当前工作目录存在。 */
 #define PIC_DIR "./pic"
+
+/** @brief 触摸松手时，横向移动超过该距离才判定为一次有效切换。 */
 #define SWIPE_MIN_DISTANCE 80
+
+/** @brief 松手后的补间动画帧数。帧数越大越平滑，但 CPU 占用和耗时也越高。 */
 #define SLIDE_ANIMATION_FRAMES 10
+
+/** @brief 补间动画每帧间隔，16000us 约等于 60 FPS 的单帧时间。 */
 #define SLIDE_ANIMATION_DELAY_US 16000
 
+/** @brief 动态图片路径列表。paths[i] 指向 malloc 分配的完整图片路径。 */
 typedef struct {
     char **paths;
     int count;
     int capacity;
 } image_list_t;
 
+/** @brief 屏幕上的可见矩形区域，用于裁剪超出 LCD 边界的图片。 */
 typedef struct {
     int x;
     int y;
@@ -22,16 +48,37 @@ typedef struct {
     int width;
 } rect_t;
 
+/**
+ * @brief 单张图片的页面缓存。
+ *
+ * pixels 保存已经缩放并居中后的 800x480 RGB 像素数据。
+ * 缓存格式和 framebuffer 一致，所以滑动时可以直接按行 memcpy。
+ */
 typedef struct {
     int length;
     int width;
     unsigned int *pixels;
 } pic_cache_t;
 
+/**
+ * @brief 离屏帧缓存。
+ *
+ * 每次滑动绘制时，先把当前图和目标图按偏移量画入 frame_cache_t，
+ * 再整体刷新到 LCD framebuffer。
+ */
 typedef struct {
     unsigned int *pixels;
 } frame_cache_t;
 
+/**
+ * @brief 判断字符串是否以指定后缀结尾，大小写不敏感。
+ *
+ * @param[in] text 待检查的字符串。
+ * @param[in] suffix 后缀字符串，例如 ".png"。
+ *
+ * @retval 1 text 以后缀 suffix 结尾。
+ * @retval 0 不匹配。
+ */
 static int string_ends_with_ignore_case(const char *text, const char *suffix)
 {
     size_t text_len = strlen(text);
@@ -53,6 +100,14 @@ static int string_ends_with_ignore_case(const char *text, const char *suffix)
     return 1;
 }
 
+/**
+ * @brief 判断文件名是否是当前图片解码库支持的格式。
+ *
+ * @param[in] name 目录项文件名。
+ *
+ * @retval 1 支持的图片后缀。
+ * @retval 0 其他文件。
+ */
 static int is_supported_image(const char *name)
 {
     return string_ends_with_ignore_case(name, ".png") ||
@@ -61,6 +116,16 @@ static int is_supported_image(const char *name)
            string_ends_with_ignore_case(name, ".bmp");
 }
 
+/**
+ * @brief qsort 使用的字符串比较函数。
+ *
+ * @param[in] left 指向 char * 的二级指针。
+ * @param[in] right 指向 char * 的二级指针。
+ *
+ * @retval <0 left 排在 right 前。
+ * @retval 0 两者相等。
+ * @retval >0 left 排在 right 后。
+ */
 static int image_path_compare(const void *left, const void *right)
 {
     const char *left_path = *(const char * const *)left;
@@ -69,6 +134,15 @@ static int image_path_compare(const void *left, const void *right)
     return strcmp(left_path, right_path);
 }
 
+/**
+ * @brief 释放图片路径列表。
+ *
+ * @param[in,out] list 要释放的图片列表。
+ *
+ *
+ * 函数会释放 paths 数组以及数组内每个字符串，并把结构体清零，
+ * 因此可以安全重复调用。
+ */
 static void image_list_free(image_list_t *list)
 {
     if(list == NULL)
@@ -85,6 +159,20 @@ static void image_list_free(image_list_t *list)
     list->capacity = 0;
 }
 
+/**
+ * @brief 向图片列表追加一个路径。
+ *
+ * @param[in,out] list 目标图片列表。
+ * @param[in] dir 图片目录。
+ * @param[in] name 图片文件名。
+ *
+ * @retval 0 追加成功。
+ * @retval -1 内存分配失败。
+ *
+ *
+ * 该函数会把 dir/name 拼成完整路径并复制到堆内存中，调用者最终
+ * 需要通过 image_list_free() 释放。
+ */
 static int image_list_push(image_list_t *list, const char *dir, const char *name)
 {
     if(list->count == list->capacity) {
@@ -113,6 +201,16 @@ static int image_list_push(image_list_t *list, const char *dir, const char *name
     return 0;
 }
 
+/**
+ * @brief 扫描目录并加载图片文件列表。
+ *
+ * @param[out] list 输出图片列表。
+ * @param[in] dir 要扫描的图片目录。
+ *
+ * @retval 0 扫描成功，list 中按文件名排序保存所有支持的图片路径。
+ * @retval -1 打开目录失败。
+ * @retval -2 添加路径时内存分配失败。
+ */
 static int load_image_list(image_list_t *list, const char *dir)
 {
     DIR *dp = opendir(dir);
@@ -147,6 +245,15 @@ static int load_image_list(image_list_t *list, const char *dir)
     return 0;
 }
 
+/**
+ * @brief 将 8 位 R/G/B 分量打包成 framebuffer 使用的 0x00RRGGBB 格式。
+ *
+ * @param[in] r 红色分量。
+ * @param[in] g 绿色分量。
+ * @param[in] b 蓝色分量。
+ *
+ * @return 0x00RRGGBB 格式的像素值。
+ */
 static unsigned int rgb888(unsigned char r, unsigned char g, unsigned char b)
 {
     return ((unsigned int)r << 16) |
@@ -154,6 +261,20 @@ static unsigned int rgb888(unsigned char r, unsigned char g, unsigned char b)
            (unsigned int)b;
 }
 
+/**
+ * @brief 将 RGBA 像素预混合到黑色背景上。
+ *
+ * @param[in] r 图片解码出的红色分量。
+ * @param[in] g 图片解码出的绿色分量。
+ * @param[in] b 图片解码出的蓝色分量。
+ * @param[in] a 图片解码出的 alpha 分量。
+ *
+ * @return 可直接写入 LCD 的 0x00RRGGBB 像素。
+ *
+ *
+ * 图片页面缓存本身不保留 alpha 通道。透明区域预先与黑色背景混合，
+ * 这样滑动时只需要拷贝像素，不需要每帧做 alpha 混合。
+ */
 static unsigned int blend_with_black(unsigned char r,
                                      unsigned char g,
                                      unsigned char b,
@@ -165,6 +286,14 @@ static unsigned int blend_with_black(unsigned char r,
     return rgb888(r * a / 255, g * a / 255, b * a / 255);
 }
 
+/**
+ * @brief 释放单张图片页面缓存。
+ *
+ * @param[in,out] cache 要释放的图片缓存。
+ *
+ *
+ * 函数会释放 pixels，并把尺寸和指针清零。结构体清零后可以重新加载。
+ */
 static void pic_cache_free(pic_cache_t *cache)
 {
     if(cache == NULL)
@@ -176,6 +305,22 @@ static void pic_cache_free(pic_cache_t *cache)
     cache->width = 0;
 }
 
+/**
+ * @brief 加载图片并生成 800x480 页面缓存。
+ *
+ * @param[out] cache 输出缓存。调用前应为空，或由 load_cache_at() 先释放旧内容。
+ * @param[in] pic_path 图片文件路径。
+ *
+ * @retval 0 加载成功。
+ * @retval -1 参数无效。
+ * @retval -2 图片解码失败。
+ * @retval -3 图片尺寸异常。
+ * @retval -4 页面缓存内存分配失败。
+ *
+ * @details 显示规则：
+ * 图片会按原始比例等比缩放到屏幕内的最大尺寸，并居中显示。
+ * 例如竖图会上下撑满并左右留黑边，宽图会左右撑满并上下留黑边。
+ */
 static int pic_cache_load(pic_cache_t *cache, const char *pic_path)
 {
     lcd_pic_t pic = {0, 0, NULL};
@@ -207,6 +352,7 @@ static int pic_cache_load(pic_cache_t *cache, const char *pic_path)
     cache->width = LCD_H;
     memset(cache->pixels, 0, (size_t)LCD_W * LCD_H * sizeof(cache->pixels[0]));
 
+    /** @brief 比较 LCD_W/pic.width 与 LCD_H/pic.height，选择不会超屏的缩放边。 */
     if((long)LCD_W * pic.height <= (long)LCD_H * pic.width) {
         fit_w = LCD_W;
         fit_h = (int)((long)LCD_W * pic.height / pic.width);
@@ -224,6 +370,12 @@ static int pic_cache_load(pic_cache_t *cache, const char *pic_path)
     offset_x = (LCD_W - fit_w) / 2;
     offset_y = (LCD_H - fit_h) / 2;
 
+    /**
+     * @brief 最近邻缩放。
+     *
+     * @details 性能开销低，适合当前 ARM 板实时交互场景。
+     * 如果以后追求更高画质，可以在这里替换成双线性插值。
+     */
     for(y = 0; y < fit_h; y++) {
         int src_y = y * pic.height / fit_h;
 
@@ -243,6 +395,17 @@ static int pic_cache_load(pic_cache_t *cache, const char *pic_path)
     return 0;
 }
 
+/**
+ * @brief 按图片索引加载页面缓存。
+ *
+ * @param[in] list 已排序的图片路径列表。
+ * @param[in] index 要加载的图片索引。
+ * @param[in,out] cache 输出缓存。函数会先释放 cache 内旧像素。
+ *
+ * @retval 0 加载成功。
+ * @retval -1 参数或索引无效。
+ * @retval <0 pic_cache_load() 返回的错误。
+ */
 static int load_cache_at(const image_list_t *list, int index, pic_cache_t *cache)
 {
     if(list == NULL || cache == NULL || index < 0 || index >= list->count)
@@ -254,6 +417,15 @@ static int load_cache_at(const image_list_t *list, int index, pic_cache_t *cache
     return pic_cache_load(cache, list->paths[index]);
 }
 
+/**
+ * @brief 初始化离屏帧缓存。
+ *
+ * @param[out] frame 输出帧缓存。
+ *
+ * @retval 0 初始化成功。
+ * @retval -1 参数无效。
+ * @retval -2 内存分配失败。
+ */
 static int frame_cache_init(frame_cache_t *frame)
 {
     if(frame == NULL)
@@ -266,6 +438,11 @@ static int frame_cache_init(frame_cache_t *frame)
     return 0;
 }
 
+/**
+ * @brief 释放离屏帧缓存。
+ *
+ * @param[in,out] frame 要释放的帧缓存。
+ */
 static void frame_cache_free(frame_cache_t *frame)
 {
     if(frame == NULL)
@@ -275,6 +452,18 @@ static void frame_cache_free(frame_cache_t *frame)
     frame->pixels = NULL;
 }
 
+/**
+ * @brief 计算一个矩形落在 LCD 屏幕内的可见部分。
+ *
+ * @param[in] x 原始矩形左上角横坐标。
+ * @param[in] y 原始矩形左上角纵坐标。
+ * @param[in] length 原始矩形宽度。
+ * @param[in] width 原始矩形高度。
+ * @param[out] rect 输出的屏幕内可见矩形。
+ *
+ * @retval 1 有可见区域。
+ * @retval 0 完全不可见，或参数无效。
+ */
 static int visible_rect(int x, int y, int length, int width, rect_t *rect)
 {
     long right = (long)x + length;
@@ -298,6 +487,18 @@ static int visible_rect(int x, int y, int length, int width, rect_t *rect)
     return 1;
 }
 
+/**
+ * @brief 将图片页面缓存画到离屏帧缓存。
+ *
+ * @param[in,out] frame 目标离屏帧缓存。
+ * @param[in] cache 源图片页面缓存。
+ * @param[in] img_x 图片页面左上角在屏幕坐标系中的横坐标。
+ * @param[in] img_y 图片页面左上角在屏幕坐标系中的纵坐标。
+ *
+ *
+ * 图片可能处于滑动过程中的屏幕外位置，所以这里会先裁剪可见区域，
+ * 然后按行 memcpy，避免逐像素写入带来的额外开销。
+ */
 static void frame_cache_draw_pic(frame_cache_t *frame,
                                  const pic_cache_t *cache,
                                  int img_x,
@@ -324,6 +525,15 @@ static void frame_cache_draw_pic(frame_cache_t *frame,
     }
 }
 
+/**
+ * @brief 将离屏帧缓存刷新到 LCD framebuffer。
+ *
+ * @param[in] frame 已经绘制好的离屏帧缓存。
+ *
+ *
+ * lcd_get_p() 返回 mmap 后的 framebuffer 地址。这里一次性 memcpy 整屏，
+ * 可以减少边画边显示导致的中间状态。
+ */
 static void frame_cache_flush(const frame_cache_t *frame)
 {
     unsigned int (*fb)[LCD_W] = lcd_get_p();
@@ -334,6 +544,15 @@ static void frame_cache_flush(const frame_cache_t *frame)
     memcpy(fb, frame->pixels, LCD_SIZE);
 }
 
+/**
+ * @brief 显示单张已缓存图片。
+ *
+ * @param[in,out] frame 离屏帧缓存。
+ * @param[in] cache 要显示的图片页面缓存。
+ *
+ * @retval 0 显示成功。
+ * @retval -1 参数无效。
+ */
 static int show_cached_image(frame_cache_t *frame, const pic_cache_t *cache)
 {
     if(frame == NULL || cache == NULL || cache->pixels == NULL)
@@ -345,16 +564,48 @@ static int show_cached_image(frame_cache_t *frame, const pic_cache_t *cache)
     return 0;
 }
 
+/**
+ * @brief 计算下一张图片索引，支持从最后一张循环回第一张。
+ *
+ * @param[in] index 当前索引。
+ * @param[in] count 图片总数。
+ *
+ * @return 下一张图片索引。
+ */
 static int next_index(int index, int count)
 {
     return (index + 1) % count;
 }
 
+/**
+ * @brief 计算上一张图片索引，支持从第一张循环到最后一张。
+ *
+ * @param[in] index 当前索引。
+ * @param[in] count 图片总数。
+ *
+ * @return 上一张图片索引。
+ */
 static int prev_index(int index, int count)
 {
     return (index + count - 1) % count;
 }
 
+/**
+ * @brief 加载当前图片两侧的邻居缓存。
+ *
+ * @param[in] list 图片路径列表。
+ * @param[in] current_index 当前显示的图片索引。
+ * @param[out] prev_pic 输出上一张图片缓存。
+ * @param[out] next_pic 输出下一张图片缓存。
+ *
+ * @retval 0 加载成功，或图片数量不超过 1 时无需加载。
+ * @retval -1 上一张加载失败。
+ * @retval -2 下一张加载失败。
+ *
+ *
+ * 程序只持有当前、上一张、下一张三份图片页面缓存。
+ * 这样滑动跟手时不会临时解码图片，同时内存占用不会随图片总数增长。
+ */
 static int load_neighbor_caches(const image_list_t *list,
                                 int current_index,
                                 pic_cache_t *prev_pic,
@@ -372,6 +623,13 @@ static int load_neighbor_caches(const image_list_t *list,
     return 0;
 }
 
+/**
+ * @brief 限制滑动偏移量不超过一屏宽。
+ *
+ * @param[in] offset 手指移动产生的横向偏移。
+ *
+ * @return 被限制在 [-LCD_W, LCD_W] 范围内的偏移。
+ */
 static int clamp_slide_offset(int offset)
 {
     if(offset < -LCD_W)
@@ -383,6 +641,21 @@ static int clamp_slide_offset(int offset)
     return offset;
 }
 
+/**
+ * @brief 绘制滑动过程中的一帧。
+ *
+ * @param[in,out] frame 离屏帧缓存。
+ * @param[in] current_pic 当前图片页面缓存。
+ * @param[in] target_pic 目标图片页面缓存。
+ * @param[in] offset 当前图片相对原位置的横向偏移。
+ * @param[in] target_is_next 1 表示目标图是下一张，0 表示目标图是上一张。
+ *
+ * @retval 0 绘制成功。
+ * @retval -1 参数无效或缓存未加载。
+ *
+ *
+ * 当前图跟随手指移动；目标图从屏幕左侧或右侧进入。
+ */
 static int draw_slide_frame(frame_cache_t *frame,
                             const pic_cache_t *current_pic,
                             const pic_cache_t *target_pic,
@@ -405,6 +678,21 @@ static int draw_slide_frame(frame_cache_t *frame,
     return 0;
 }
 
+/**
+ * @brief 松手后补齐滑动动画。
+ *
+ * @param[in,out] frame 离屏帧缓存。
+ * @param[in] current_pic 当前图片页面缓存。
+ * @param[in] target_pic 目标图片页面缓存。
+ * @param[in] from_offset 松手时当前图片的横向偏移。
+ * @param[in] to_offset 动画结束时当前图片的横向偏移。
+ * @param[in] target_is_next 目标图方向，1 为下一张，0 为上一张。
+ *
+ * @retval 0 动画绘制完成。
+ *
+ *
+ * 使用 smoothstep 风格的缓入缓出曲线，让回弹或完成切换看起来更自然。
+ */
 static int animate_slide(frame_cache_t *frame,
                          const pic_cache_t *current_pic,
                          const pic_cache_t *target_pic,
@@ -430,6 +718,19 @@ static int animate_slide(frame_cache_t *frame,
     return 0;
 }
 
+/**
+ * @brief 程序入口。
+ *
+ * @retval 0 正常结束。
+ * @retval 1 初始化、加载图片或运行时触摸读取失败。
+ *
+ * @details 主流程：
+ * 1. 扫描图片目录，初始化 LCD、触摸屏和离屏帧缓存。
+ * 2. 加载当前图、上一张图、下一张图三份页面缓存。
+ * 3. 在触摸事件循环中处理 DOWN/MOVE/UP：
+ *    - MOVE: 只根据手指偏移绘制已缓存的当前图和目标图。
+ *    - UP: 判断是否完成切换，执行补间动画并更新三张缓存的所有权。
+ */
 int main(void)
 {
     image_list_t images = {0};
@@ -468,12 +769,14 @@ int main(void)
         goto cleanup;
     }
 
+    /** @brief 首屏显示前加载当前图；后续滑动时 current_pic 始终表示屏幕上的图。 */
     if(load_cache_at(&images, current_index, &current_pic) != 0 ||
        show_cached_image(&frame, &current_pic) != 0) {
         ret = 1;
         goto cleanup;
     }
 
+    /** @brief 提前加载左右邻居，避免第一次 MOVE 时同步解码导致屏幕卡顿。 */
     if(load_neighbor_caches(&images, current_index, &prev_pic, &next_pic) != 0) {
         ret = 1;
         goto cleanup;
@@ -502,6 +805,7 @@ int main(void)
 
             has_down = 0;
 
+            /** @brief 纵向滑动或距离过短不切图，恢复显示当前图片。 */
             if(images.count <= 1 || abs(dx) <= abs(dy)) {
                 show_cached_image(&frame, &current_pic);
                 continue;
@@ -528,6 +832,13 @@ int main(void)
 
             if(completed) {
                 if(target_is_next) {
+                    /**
+                     * @brief 左滑到下一张时轮换三张页面缓存。
+                     *
+                     * @details 原 prev_pic 不再需要，先释放；原 current_pic
+                     * 变成新的 prev_pic；原 next_pic 变成新的 current_pic；
+                     * 再加载新的 next_pic，保持三张缓存完整。
+                     */
                     pic_cache_free(&prev_pic);
                     prev_pic = current_pic;
                     current_pic = next_pic;
@@ -542,6 +853,13 @@ int main(void)
                         break;
                     }
                 } else {
+                    /**
+                     * @brief 右滑到上一张时轮换三张页面缓存。
+                     *
+                     * @details 原 next_pic 不再需要，先释放；原 current_pic
+                     * 变成新的 next_pic；原 prev_pic 变成新的 current_pic；
+                     * 再加载新的 prev_pic，保持三张缓存完整。
+                     */
                     pic_cache_free(&next_pic);
                     next_pic = current_pic;
                     current_pic = prev_pic;
@@ -566,6 +884,12 @@ int main(void)
             int target_is_next;
             pic_cache_t *target_pic;
 
+            /**
+             * @brief MOVE 阶段只使用已经准备好的邻居缓存。
+             *
+             * @details MOVE 期间不加载图片，避免触摸移动的首帧被同步解码阻塞。
+             * 这是保证滑动首帧立即响应和跟手流畅的关键。
+             */
             if(images.count <= 1 || abs(dx) <= abs(dy)) {
                 continue;
             }
