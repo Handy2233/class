@@ -1,9 +1,5 @@
 #include "GEC6818.h"
 
-#include <ctype.h>
-#include <dirent.h>
-#include <stdlib.h>
-
 /**
  * @file main.c
  * @brief 图片浏览器主程序。
