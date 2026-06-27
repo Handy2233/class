@@ -825,12 +825,12 @@ int lcd_word_init(void)
  * @retval -3 utf8 参数为空。
  *
  * @details y 会先转换成 baseline，再逐字符绘制。'\n' 会换到下一行，
- * '\r' 会被忽略，'\t' 会按一个字号宽度推进。函数直接绘制到当前
- * framebuffer，不会清除文字区域背景。
+ * '\r' 会被忽略，'\t' 会按一个字号宽度推进。函数绘制到 LCD 当前
+ * 绘制目标，不会清除文字区域背景。
  */
 int lcd_word_show_color(int x, int y, const char *utf8, unsigned int color)
 {
-    unsigned int (*fb)[LCD_W] = lcd_get_p();
+    unsigned int (*fb)[LCD_W] = lcd_get_draw_p();
     const char *p = utf8;
     int cursor_x = x;
     int baseline_y = y + word_line_ascent();

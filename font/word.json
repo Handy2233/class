@@ -1,6 +1,6 @@
 {
-  "size": 32,
-  "line_gap": 6,
+  "size": 28,
+  "line_gap": 7,
   "color": "0xffffff",
   "font": {
     "zh": "font/SimSun.ttc",

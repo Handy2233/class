@@ -6,8 +6,9 @@
  * @brief LCD framebuffer 实现。
  *
  * 本文件直接操作 Linux framebuffer (/dev/fb0)。初始化时通过 mmap
- * 将整块显存映射为二维像素数组 lcd_p，之后所有绘制函数都直接写
- * lcd_p[y][x]。
+ * 将整块显存映射为二维像素数组 lcd_p。默认绘制函数直接写 lcd_p；
+ * 设置离屏绘制目标后，绘制函数会先写用户提供的整屏缓存，再由调用者
+ * 一次性提交到 framebuffer。
  *
  * 图片解码使用 stb_image。对外接口统一把图片解码成 RGBA，显示时
  * 再写成 framebuffer 使用的 0x00RRGGBB 格式。
@@ -34,6 +35,7 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <fcntl.h>
+#include <string.h>
 #include <unistd.h>
 
 /** @brief framebuffer 文件描述符。-1 表示尚未打开或已经关闭。 */
@@ -41,6 +43,9 @@ static int lcd_fd = -1;
 
 /** @brief mmap 后的 LCD 像素地址，按 [y][x] 访问。NULL 表示未初始化。 */
 static unsigned int (*lcd_p)[LCD_W] = NULL;
+
+/** @brief 当前绘制目标。默认指向 lcd_p，也可以临时指向离屏页面缓存。 */
+static unsigned int (*lcd_draw_p)[LCD_W] = NULL;
 
 /**
  * @brief 将 8 位 R/G/B 分量打包成 LCD 像素格式。
@@ -129,7 +134,9 @@ static int lcd_min_int(int a, int b)
  */
 static void lcd_fill_rect(int x, int y, int length, int width, unsigned int color)
 {
-    if(lcd_p == NULL)
+    unsigned int (*target)[LCD_W] = lcd_get_draw_p();
+
+    if(target == NULL)
         return;
 
     if(length <= 0 || width <= 0)
@@ -150,7 +157,7 @@ static void lcd_fill_rect(int x, int y, int length, int width, unsigned int colo
 
     for(dst_y = dst_y0; dst_y < dst_y1; dst_y++) {
         for(dst_x = dst_x0; dst_x < dst_x1; dst_x++) {
-            lcd_p[dst_y][dst_x] = color;
+            target[dst_y][dst_x] = color;
         }
     }
 }
@@ -186,7 +193,9 @@ static void lcd_show_rgba_scaled_clip(int x,
                                       int clip_length,
                                       int clip_width)
 {
-    if(lcd_p == NULL || rgba == NULL)
+    unsigned int (*target)[LCD_W] = lcd_get_draw_p();
+
+    if(target == NULL || rgba == NULL)
         return;
 
     if(length <= 0 || width <= 0 || pic_w <= 0 || pic_h <= 0 ||
@@ -231,9 +240,10 @@ static void lcd_show_rgba_scaled_clip(int x,
                 continue;
 
             if(a == 255) {
-                lcd_p[dst_y][dst_x] = lcd_rgb(r, g, b);
+                target[dst_y][dst_x] = lcd_rgb(r, g, b);
             } else {
-                lcd_p[dst_y][dst_x] = lcd_blend(lcd_p[dst_y][dst_x], r, g, b, a);
+                target[dst_y][dst_x] =
+                    lcd_blend(target[dst_y][dst_x], r, g, b, a);
             }
         }
     }
@@ -290,6 +300,7 @@ int lcd_init(void)
         lcd_p = NULL;
         return -2;
     }
+    lcd_draw_p = lcd_p;
     LOG_INFO("lcd init ok");
     return 0;
 }
@@ -303,13 +314,15 @@ int lcd_init(void)
  */
 void lcd_show(int x, int y, unsigned int color)
 {
-    if(lcd_p == NULL)
+    unsigned int (*target)[LCD_W] = lcd_get_draw_p();
+
+    if(target == NULL)
         return;
 
     if(x < 0 || x >= LCD_W || y < 0 || y >= LCD_H)
         return;
 
-    lcd_p[y][x] = color;
+    target[y][x] = color;
 }
 
 /**
@@ -512,6 +525,44 @@ void lcd_clear_rect(int x, int y, int length, int width)
     lcd_fill_rect(x, y, length, width, LCD_BLACK);
 }
 
+/**
+ * @brief 设置后续绘制函数的目标像素缓冲。
+ *
+ * @param[in] pixels 目标缓冲，大小必须至少为 LCD_SIZE；传 NULL 时恢复
+ *                   直接绘制到真实 framebuffer。
+ */
+void lcd_set_draw_buffer(unsigned int *pixels)
+{
+    if(lcd_p == NULL)
+        return;
+
+    if(pixels == NULL)
+        lcd_draw_p = lcd_p;
+    else
+        lcd_draw_p = (unsigned int (*)[LCD_W])pixels;
+}
+
+/**
+ * @brief 将一整屏离屏缓冲提交到真实 framebuffer。
+ *
+ * @param[in] pixels 需要提交的 LCD_W x LCD_H 像素缓冲。
+ *
+ * @retval 0 提交成功。
+ * @retval -1 LCD 尚未初始化。
+ * @retval -2 pixels 参数为空。
+ */
+int lcd_flush_draw_buffer(const unsigned int *pixels)
+{
+    if(lcd_p == NULL)
+        return -1;
+
+    if(pixels == NULL)
+        return -2;
+
+    memcpy(lcd_p, pixels, LCD_SIZE);
+    return 0;
+}
+
 /** @brief 释放 framebuffer 映射并关闭设备。 */
 void lcd_uninit(void)
 {
@@ -519,6 +570,7 @@ void lcd_uninit(void)
         munmap(lcd_p, LCD_SIZE);
         lcd_p = NULL;
     }
+    lcd_draw_p = NULL;
 
     if(lcd_fd != -1) {
         close(lcd_fd);
@@ -535,4 +587,18 @@ void lcd_uninit(void)
 unsigned int (*lcd_get_p(void))[LCD_W]
 {
     return lcd_p;
+}
+
+/**
+ * @brief 获取当前绘制目标地址。
+ *
+ * @retval 非NULL 当前绘制目标。
+ * @retval NULL LCD 尚未初始化。
+ */
+unsigned int (*lcd_get_draw_p(void))[LCD_W]
+{
+    if(lcd_p == NULL)
+        return NULL;
+
+    return lcd_draw_p != NULL ? lcd_draw_p : lcd_p;
 }

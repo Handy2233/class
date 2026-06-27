@@ -20,6 +20,7 @@
 #include "pic.h"
 #include "pwm.h"
 #include "uarts.h"
+#include "ui_app.h"
 #include "word.h"
 
 #endif

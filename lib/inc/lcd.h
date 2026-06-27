@@ -173,6 +173,29 @@ void lcd_clear(void);
  */
 void lcd_clear_rect(int x, int y, int length, int width);
 
+/**
+ * @brief 设置后续绘制函数的目标像素缓冲。
+ *
+ * @param[in] pixels 目标缓冲，大小必须至少为 LCD_SIZE；传 NULL 时恢复
+ *                   直接绘制到真实 framebuffer。
+ *
+ * @details lcd_show()、lcd_pic_show() 和文字模块会写入当前绘制目标。
+ * 该接口用于先把完整页面画进内存缓存，再调用 lcd_flush_draw_buffer()
+ * 一次性提交到屏幕，避免用户看到逐块重绘过程。
+ */
+void lcd_set_draw_buffer(unsigned int *pixels);
+
+/**
+ * @brief 将一整屏离屏缓冲提交到真实 framebuffer。
+ *
+ * @param[in] pixels 需要提交的 LCD_W x LCD_H 像素缓冲。
+ *
+ * @retval 0 提交成功。
+ * @retval -1 LCD 尚未初始化。
+ * @retval -2 pixels 参数为空。
+ */
+int lcd_flush_draw_buffer(const unsigned int *pixels);
+
 /** @brief 释放 framebuffer 映射并关闭 /dev/fb0。 */
 void lcd_uninit(void);
 
@@ -186,6 +209,18 @@ void lcd_uninit(void);
  * 该接口主要用于高性能批量绘制，例如离屏缓存整屏 memcpy。
  */
 unsigned int (*lcd_get_p(void))[LCD_W];
+
+/**
+ * @brief 获取当前绘制目标地址。
+ *
+ * @retval 非NULL 指向 [LCD_H][LCD_W] 形式的当前绘制目标。
+ * @retval NULL LCD 尚未初始化。
+ *
+ * @details 未设置离屏缓冲时返回真实 framebuffer；调用
+ * lcd_set_draw_buffer() 后返回用户提供的离屏缓冲。文字模块使用该接口
+ * 跟随页面绘制目标，避免文字绕过离屏缓存直接写屏。
+ */
+unsigned int (*lcd_get_draw_p(void))[LCD_W];
 
 /**
  * @brief lcd_show_pic() 参数个数分发宏。

@@ -67,6 +67,21 @@ int touch_init(void);
  */
 int touch_read(touch_event_t *event);
 
+/**
+ * @brief 在指定超时时间内读取一个归一化触摸事件。
+ *
+ * @param[out] event 输出事件。
+ * @param[in] timeout_ms 等待超时，单位 ms。小于 0 表示一直等待。
+ *
+ * @retval 0 成功读取到 DOWN/MOVE/UP 事件。
+ * @retval -1 event 参数为空。
+ * @retval -2 触摸设备尚未初始化。
+ * @retval -3 select 等待失败。
+ * @retval -4 read 触摸设备失败。
+ * @retval -5 等待超时。
+ */
+int touch_read_timeout(touch_event_t *event, int timeout_ms);
+
 /** @brief 关闭触摸设备。 */
 void touch_uninit(void);
 

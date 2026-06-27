@@ -612,13 +612,18 @@ static int touch_process_input_event(const struct input_event *ev, touch_event_t
  * - DOWN/UP 事件立即返回，保证点击边界清晰。
  * - MOVE 事件只保留最后一个，避免上层绘制追赶大量过期位置。
  */
-int touch_read(touch_event_t *event)
+static int touch_read_internal(touch_event_t *event, int timeout_ms)
 {
+    long deadline_ms = 0;
+
     if(event == NULL)
         return -1;
 
     if(touch_fd == -1)
         return -2;
+
+    if(timeout_ms >= 0)
+        deadline_ms = touch_now_ms() + timeout_ms;
 
     touch_event_t latest_move;
     int has_latest_move = 0;
@@ -652,10 +657,29 @@ int touch_read(touch_event_t *event)
 
             /** @brief 没有可返回事件时阻塞等待下一批 input event。 */
             fd_set read_set;
+            struct timeval timeout;
+            struct timeval *timeout_ptr = NULL;
+
             FD_ZERO(&read_set);
             FD_SET(touch_fd, &read_set);
 
-            if(select(touch_fd + 1, &read_set, NULL, NULL, NULL) == -1) {
+            if(timeout_ms >= 0) {
+                long remain_ms = deadline_ms - touch_now_ms();
+
+                if(remain_ms <= 0)
+                    return -5;
+
+                timeout.tv_sec = remain_ms / 1000;
+                timeout.tv_usec = (remain_ms % 1000) * 1000;
+                timeout_ptr = &timeout;
+            }
+
+            int ready = select(touch_fd + 1, &read_set, NULL, NULL,
+                               timeout_ptr);
+            if(ready == 0)
+                return -5;
+
+            if(ready == -1) {
                 if(errno == EINTR)
                     continue;
 
@@ -674,6 +698,34 @@ int touch_read(touch_event_t *event)
             return -4;
         }
     }
+}
+
+/**
+ * @brief 阻塞读取一个触摸事件。
+ *
+ * @param[out] event 输出触摸事件。
+ *
+ * @retval 0 成功读取到 DOWN/MOVE/UP 事件。
+ * @retval <0 touch_read_internal() 返回的错误码。
+ */
+int touch_read(touch_event_t *event)
+{
+    return touch_read_internal(event, -1);
+}
+
+/**
+ * @brief 在指定超时时间内读取一个触摸事件。
+ *
+ * @param[out] event 输出触摸事件。
+ * @param[in] timeout_ms 超时时间，单位 ms；0 表示只检查当前是否有事件。
+ *
+ * @retval 0 成功读取到 DOWN/MOVE/UP 事件。
+ * @retval -5 超时未读取到完整触摸事件。
+ * @retval <0 其他触摸读取错误。
+ */
+int touch_read_timeout(touch_event_t *event, int timeout_ms)
+{
+    return touch_read_internal(event, timeout_ms);
 }
 
 /**
