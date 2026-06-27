@@ -1,3 +1,6 @@
+#ifndef __GEC6818_H__
+#define __GEC6818_H__
+
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -11,5 +14,12 @@
 #include <stdlib.h>
 
 #include "lcd.h"
+#include "led.h"
 #include "touch.h"
 #include "log.h"
+#include "pic.h"
+#include "pwm.h"
+#include "uarts.h"
+#include "word.h"
+
+#endif
