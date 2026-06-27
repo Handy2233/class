@@ -45,8 +45,11 @@
 #define ALARM_HISTORY_PANEL_Y 394
 #define ALARM_HISTORY_PANEL_W 692
 #define ALARM_HISTORY_PANEL_H 52
-#define ALARM_HISTORY_PAGE_MAX 3
+#define ALARM_HISTORY_PAGE_MAX 2
 #define ALARM_LOG_LINE_MAX 192
+#define ALARM_HISTORY_ROW_Y 288
+#define ALARM_HISTORY_ROW_H 72
+#define ALARM_HISTORY_DETAIL_MAX_W 628
 #define ALARM_SOUND_TOGGLE_X 610
 #define ALARM_SOUND_TOGGLE_Y 146
 
@@ -938,6 +941,86 @@ static void ui_format_unsigned_2(char *out, size_t out_size, unsigned int value)
 }
 
 /**
+ * @brief 获取一个 UTF-8 字符占用的字节数。
+ *
+ * @param[in] lead UTF-8 字符首字节。
+ *
+ * @return 字符字节数。非法或不完整编码按 1 字节处理。
+ */
+static size_t ui_utf8_char_bytes(unsigned char lead)
+{
+    if((lead & 0x80U) == 0)
+        return 1;
+
+    if((lead & 0xe0U) == 0xc0U)
+        return 2;
+
+    if((lead & 0xf0U) == 0xe0U)
+        return 3;
+
+    if((lead & 0xf8U) == 0xf0U)
+        return 4;
+
+    return 1;
+}
+
+/**
+ * @brief 按像素宽度裁剪 UTF-8 文本。
+ *
+ * @param[out] out 输出缓冲区。
+ * @param[in] out_size 输出缓冲区大小。
+ * @param[in] text 原始文本。
+ * @param[in] max_w 最大显示宽度，单位像素。
+ *
+ * @details 裁剪时只在 UTF-8 字符边界截断，并在被截断时追加 ".."。
+ */
+static void ui_copy_text_fit(char *out,
+                             size_t out_size,
+                             const char *text,
+                             int max_w)
+{
+    size_t used = 0;
+    const char *cursor = text;
+    int measured = 0;
+
+    if(out == NULL || out_size == 0)
+        return;
+
+    out[0] = '\0';
+    if(text == NULL)
+        return;
+
+    while(*cursor != '\0') {
+        size_t char_len = ui_utf8_char_bytes((unsigned char)*cursor);
+
+        if(strlen(cursor) < char_len)
+            char_len = 1;
+
+        if(used + char_len >= out_size)
+            break;
+
+        memcpy(out + used, cursor, char_len);
+        used += char_len;
+        out[used] = '\0';
+
+        if(lcd_word_measure(out, &measured, NULL) == 0 && measured > max_w) {
+            if(used >= char_len)
+                used -= char_len;
+            out[used] = '\0';
+            break;
+        }
+
+        cursor += char_len;
+    }
+
+    if(*cursor != '\0' && used + 2 < out_size) {
+        out[used++] = '.';
+        out[used++] = '.';
+        out[used] = '\0';
+    }
+}
+
+/**
  * @brief 根据报警类型生成事件名称。
  *
  * @param[in] temperature_alarm 是否温度报警。
@@ -1040,7 +1123,7 @@ static void ui_alarm_make_log_item(int temperature_alarm,
                         item->event_text, sizeof(item->event_text));
 
     snprintf(item->detail_text, sizeof(item->detail_text),
-             "温度=%sC 阈值=%sC 烟雾=%u 阈值=%u",
+             "温度 %s/%sC  烟雾 %u/%u",
              temperature,
              temp_threshold,
              sensor_state.smoke_ok && sensor_state.smoke.has_concentration ?
@@ -1365,23 +1448,20 @@ static void ui_draw_alarm_history_page(void)
 
     for(i = 0; i < count; i++) {
         int src = count - 1 - i;
-        int y = 288 + i * 54;
-        char title_line[128];
+        int y = ALARM_HISTORY_ROW_Y + i * ALARM_HISTORY_ROW_H;
+        char detail_line[96];
 
-        snprintf(title_line, sizeof(title_line), "%s  %s",
-                 items[src].time_text, items[src].event_text);
+        ui_copy_text_fit(detail_line,
+                         sizeof(detail_line),
+                         items[src].detail_text[0] != '\0' ?
+                             items[src].detail_text : items[src].event_text,
+                         ALARM_HISTORY_DETAIL_MAX_W);
 
-        lcd_word_show_color(82, y, title_line,
+        lcd_word_show_color(82, y, items[src].time_text, 0x00172033);
+        lcd_word_show_color(456, y, items[src].event_text,
                             strcmp(items[src].event_text, "温度/烟雾报警") == 0 ?
                                 0x00d92d20 : 0x00172033);
-        if(items[src].detail_text[0] != '\0') {
-            lcd_word_show_color(82, y + 27, items[src].detail_text,
-                                0x00667586);
-        } else {
-            lcd_word_show_color(82, y + 27,
-                                items[src].event_text,
-                                0x00667586);
-        }
+        lcd_word_show_color(82, y + 34, detail_line, 0x00667586);
     }
 }
 
