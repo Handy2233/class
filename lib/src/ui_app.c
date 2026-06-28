@@ -29,7 +29,10 @@
 #define SENSOR_SMOKE_UART_DEV "/dev/ttySAC2"
 #define SENSOR_REFRESH_INTERVAL_MS 1000
 #define UI_TOUCH_WAIT_MS 10
-#define SENSOR_GY39_TIMEOUT_MS 120
+#define SENSOR_GY39_LUX_TIMEOUT_MS 200
+#define SENSOR_GY39_ENV_TIMEOUT_MS GY39_DEFAULT_READ_TIMEOUT_MS
+#define SENSOR_GY39_MIN_TIMEOUT_MS 50
+#define SENSOR_GY39_MAX_TIMEOUT_MS 3000
 #define SENSOR_SMOKE_TIMEOUT_MS 160
 #define SENSOR_GY39_RX_BUF_SIZE 64
 #define SENSOR_SMOKE_RX_BUF_SIZE 32
@@ -1810,6 +1813,8 @@ static int ui_sensor_pop_smoke_frame(unsigned char raw[ZMQ01_FRAME_SIZE])
  */
 static int ui_sensor_begin_gy39_lux(long long now)
 {
+    int timeout_ms;
+
     if(sensor_state.gy39_fd < 0)
         return -1;
 
@@ -1819,8 +1824,12 @@ static int ui_sensor_begin_gy39_lux(long long now)
     if(gy39_send_command(sensor_state.gy39_fd, GY39_CMD_QUERY_LUX) != 0)
         return -1;
 
+    timeout_ms = ui_env_int_or_default("GEC6818_GY39_LUX_TIMEOUT_MS",
+                                       SENSOR_GY39_LUX_TIMEOUT_MS,
+                                       SENSOR_GY39_MIN_TIMEOUT_MS,
+                                       SENSOR_GY39_MAX_TIMEOUT_MS);
     sensor_state.poll_step = SENSOR_POLL_GY39_LUX;
-    sensor_state.poll_deadline_ms = now + SENSOR_GY39_TIMEOUT_MS;
+    sensor_state.poll_deadline_ms = now + timeout_ms;
     return 0;
 }
 
@@ -1834,6 +1843,8 @@ static int ui_sensor_begin_gy39_lux(long long now)
  */
 static int ui_sensor_begin_gy39_env(long long now)
 {
+    int timeout_ms;
+
     if(sensor_state.gy39_fd < 0)
         return -1;
 
@@ -1842,8 +1853,12 @@ static int ui_sensor_begin_gy39_env(long long now)
     if(gy39_send_command(sensor_state.gy39_fd, GY39_CMD_QUERY_ENV) != 0)
         return -1;
 
+    timeout_ms = ui_env_int_or_default("GEC6818_GY39_ENV_TIMEOUT_MS",
+                                       SENSOR_GY39_ENV_TIMEOUT_MS,
+                                       SENSOR_GY39_MIN_TIMEOUT_MS,
+                                       SENSOR_GY39_MAX_TIMEOUT_MS);
     sensor_state.poll_step = SENSOR_POLL_GY39_ENV;
-    sensor_state.poll_deadline_ms = now + SENSOR_GY39_TIMEOUT_MS;
+    sensor_state.poll_deadline_ms = now + timeout_ms;
     return 0;
 }
 

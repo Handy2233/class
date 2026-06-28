@@ -6,23 +6,6 @@
 
 ---
 
-## README 使用说明
-
-本文件同时承担两个用途：
-
-1. 作为项目 README，说明功能、结构、构建和运行方式。
-2. 作为讲解 PPT 源文件，使用支持 Marp 的工具可直接导出 PPT。
-
-推荐导出方式：
-
-```bash
-npx @marp-team/marp-cli README.md -o GEC6818智能触摸控制台.pptx --allow-local-files
-```
-
-也可以在 VS Code 安装 Marp for VS Code 插件后，右键导出为 PPTX / PDF。
-
----
-
 ## 项目背景
 
 嵌入式 Linux 开发不仅需要驱动外设，还需要把数据显示、触摸交互、设备控制和异常报警组织成完整应用。
@@ -280,6 +263,8 @@ cd /project
 | `GEC6818_TEMP_ALARM_C` | 设置默认温度报警阈值 |
 | `GEC6818_SMOKE_ALARM_RAW` | 设置默认烟雾报警阈值 |
 | `GEC6818_ALARM_SOUND` | 设置默认声音报警开关 |
+| `GEC6818_GY39_LUX_TIMEOUT_MS` | 设置 GY-39 光照帧等待超时 |
+| `GEC6818_GY39_ENV_TIMEOUT_MS` | 设置 GY-39 温湿度环境帧等待超时 |
 | `GEC6818_UART_DEV` | 设置默认 UART 设备 |
 | `GEC6818_UART_BAUD` | 设置默认 UART 波特率 |
 | `GEC6818_LED_DRV` | 设置 LED 字符设备路径 |
